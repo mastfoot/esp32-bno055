@@ -42,11 +42,13 @@ BNO055::BNO055(uart_port_t uartPort, gpio_num_t txPin, gpio_num_t rxPin, gpio_nu
     _intPin = intPin;
 }
 
-BNO055::BNO055(i2c_port_t i2cPort, uint8_t i2cAddr, gpio_num_t rstPin, gpio_num_t intPin) {
+BNO055::BNO055(i2c_master_bus_handle_t i2cBusHandle, uint8_t i2cAddr, gpio_num_t rstPin, gpio_num_t intPin, uint32_t i2cClkSpeedHz) {
     _i2cFlag = true;
 
-    _i2cPort = i2cPort;
+    _i2cBusHandle = i2cBusHandle;
+    _i2cDevHandle = NULL;
     _i2cAddr = i2cAddr;
+    _i2cClkSpeedHz = i2cClkSpeedHz;
 
     _rstPin = rstPin;
     _intPin = intPin;
@@ -65,6 +67,9 @@ BNO055::~BNO055() {
     if (!_i2cFlag) {
         // free UART
         uart_driver_delete(_uartPort);
+    } else if (_i2cDevHandle != NULL) {
+        // remove ourselves from the (caller-owned) I2C bus
+        i2c_master_bus_rm_device(_i2cDevHandle);
     }
 
 #ifndef BNO055_DEBUG_OFF
@@ -98,38 +103,18 @@ std::exception BNO055::getException(uint8_t errcode) {
 
 void BNO055::i2c_readLen(uint8_t reg, uint8_t *buffer, uint8_t len, uint32_t timeoutMS)
 {
-  uint8_t err = 0;
-
 #ifndef BNO055_DEBUG_OFF
     ESP_LOGD(BNO055_LOG_TAG, "i2c_readLen %02x 0x%02x %d %d ...", (int)_i2cAddr, (int)reg, (int)len, (int)timeoutMS);
 #endif
 
-  i2c_cmd_handle_t CommandHandle = NULL;
-  if ( ( CommandHandle = i2c_cmd_link_create( ) ) != NULL )
-  {
-    i2c_master_start( CommandHandle );
-    i2c_master_write_byte( CommandHandle, ( _i2cAddr << 1 ) | I2C_MASTER_WRITE, true);
-    i2c_master_write_byte( CommandHandle, reg, true);
-    i2c_master_start(CommandHandle);
-    i2c_master_write_byte(CommandHandle, (_i2cAddr << 1) | I2C_MASTER_READ, ACK_EN);
-    if( len > 0 )
-    {
-      if( len > 1 )
-      {
-        i2c_master_read(CommandHandle, &buffer[0], len-1, I2C_MASTER_ACK);
-      }
-      i2c_master_read(CommandHandle, &buffer[len-1], 1, I2C_MASTER_NACK);
-    }
+  // timeoutMS==0 is used elsewhere in this library to mean "don't wait for a UART response",
+  // it has no such meaning on I2C: a write must always wait for the bus transaction to
+  // finish, so 0 is remapped to -1 (i2c_master's "block indefinitely").
+  int xferTimeoutMS = (timeoutMS == 0) ? -1 : (int)timeoutMS;
 
-    i2c_master_stop( CommandHandle );
-    if( ESP_OK  != i2c_master_cmd_begin((i2c_port_t)_i2cPort, CommandHandle, pdMS_TO_TICKS(timeoutMS)) )
-    {
-      err = 1;
-    }
-    i2c_cmd_link_delete( CommandHandle );
-  }
+  esp_err_t err = i2c_master_transmit_receive(_i2cDevHandle, &reg, 1, buffer, len, xferTimeoutMS);
 
-  if( err != 0 )
+  if( err != ESP_OK )
   {
 #ifndef BNO055_DEBUG_OFF
     ESP_LOGW(BNO055_LOG_TAG, "i2c_readLen %02x %d %d %d ... ERROR", (int)_i2cAddr, (int)reg, (int)len, (int)timeoutMS);
@@ -146,28 +131,24 @@ void BNO055::i2c_readLen(uint8_t reg, uint8_t *buffer, uint8_t len, uint32_t tim
 
 void BNO055::i2c_writeLen(uint8_t reg, uint8_t *buffer, uint8_t len, uint32_t timeoutMS)
 {
-  uint8_t err = 0;
-
 #ifndef BNO055_DEBUG_OFF
     ESP_LOGD(BNO055_LOG_TAG, "i2c_writeLen %02x %d %d %d ...", (int)_i2cAddr, (int)reg, (int)len, (int)timeoutMS);
 #endif
 
-  i2c_cmd_handle_t CommandHandle = NULL;
-  if ( ( CommandHandle = i2c_cmd_link_create( ) ) != NULL )
-  {
-    i2c_master_start( CommandHandle );
-    i2c_master_write_byte( CommandHandle, ( _i2cAddr << 1 ) | I2C_MASTER_WRITE, true);
-    i2c_master_write_byte( CommandHandle, reg, true);
-    i2c_master_write( CommandHandle, (uint8_t*)&buffer[0], len, true);
-    i2c_master_stop( CommandHandle );
-    if( ESP_OK  != i2c_master_cmd_begin((i2c_port_t)_i2cPort, CommandHandle, pdMS_TO_TICKS(timeoutMS)) )
-    {
-      err = 1;
-    }
-    i2c_cmd_link_delete( CommandHandle );
+  if ((size_t)len + 1 > BNO055_I2C_WRITE_BUF_MAX) {
+    throw BNO055MaxLengthError();
   }
 
-  if( err != 0 )
+  uint8_t txBuf[BNO055_I2C_WRITE_BUF_MAX];
+  txBuf[0] = reg;
+  memcpy(&txBuf[1], buffer, len);
+
+  // see i2c_readLen() for why timeoutMS==0 is remapped to -1 here
+  int xferTimeoutMS = (timeoutMS == 0) ? -1 : (int)timeoutMS;
+
+  esp_err_t err = i2c_master_transmit(_i2cDevHandle, txBuf, len + 1, xferTimeoutMS);
+
+  if( err != ESP_OK )
   {
 #ifndef BNO055_DEBUG_OFF
     ESP_LOGW(BNO055_LOG_TAG, "i2c_writeLen %02x %d %d %d ... ERROR", (int)_i2cAddr, (int)reg, (int)len, (int)timeoutMS);
@@ -219,7 +200,7 @@ void BNO055::uart_readLen(bno055_reg_t reg, uint8_t *buffer, uint8_t len, uint32
         // else expect ACK/response
 
         // Read data from the UART
-        int rxBytes = uart_read_bytes(_uartPort, data, (len + 2), timeoutMS / portTICK_RATE_MS);
+        int rxBytes = uart_read_bytes(_uartPort, data, (len + 2), timeoutMS / portTICK_PERIOD_MS);
         if (rxBytes > 0) {
 #ifndef BNO055_DEBUG_OFF
             ESP_LOGD(BNO055_LOG_TAG, "(RL) Read %d bytes", rxBytes);
@@ -289,7 +270,7 @@ void BNO055::uart_writeLen(bno055_reg_t reg, uint8_t *data2write, uint8_t len, u
         }
         // else expect ACK/response
 
-        int rxBytes = uart_read_bytes(_uartPort, data, 2, timeoutMS / portTICK_RATE_MS);
+        int rxBytes = uart_read_bytes(_uartPort, data, 2, timeoutMS / portTICK_PERIOD_MS);
         if (rxBytes > 0) {
 #ifndef BNO055_DEBUG_OFF
             ESP_LOGD(BNO055_LOG_TAG, "(WL) Read %d bytes", rxBytes);  // DEBUG
@@ -483,7 +464,7 @@ void BNO055::reset() {
 #ifndef BNO055_DEBUG_OFF
         ESP_LOGD(BNO055_LOG_TAG, "RST -> using hardware pin");  // DEBUG
 #endif
-        gpio_pad_select_gpio(_rstPin);
+        esp_rom_gpio_pad_select_gpio(_rstPin);
         gpio_set_direction(_rstPin, GPIO_MODE_OUTPUT);
         gpio_set_level(_rstPin, 0);  // turn OFF
         vTaskDelay(1 / portTICK_PERIOD_MS);
@@ -634,6 +615,7 @@ bno055_interrupts_status_t BNO055::getInterruptsStatus() {
     uint8_t tmp = 0;
     bno055_interrupts_status_t status;
     read8(BNO055_REG_INT_STA, &tmp);
+    status.accelOrBSX = tmp & 0x01;
     status.gyroAnyMotion = (tmp >> 2) & 0x01;
     status.gyroHR = (tmp >> 3) & 0x01;
     status.accelHighG = (tmp >> 5) & 0x01;
@@ -815,6 +797,10 @@ void BNO055::setGyroHRInterrupt(uint8_t thresholdX, uint8_t durationX, uint8_t h
 
 void BNO055::disableGyroHRInterrupt() { disableInterrupt(0x08); }
 
+void BNO055::enableAccelOrBSXDataReadyInterrupt(bool useInterruptPin) { enableInterrupt(0x01, useInterruptPin); }
+void BNO055::disableAccelOrBSXDataReadyInterrupt() { disableInterrupt(0x01); }
+
+
 void BNO055::setAxisRemap(bno055_axis_config_t config, bno055_axis_sign_t sign) {
     if (_mode != BNO055_OPERATION_MODE_CONFIG) {
         throw BNO055WrongOprMode("setAxisRemap requires BNO055_OPERATION_MODE_CONFIG");
@@ -918,13 +904,22 @@ void BNO055::begin() {
         if (esperr != ESP_OK) {
             throw BNO055UartInitFailed();
         }
+    } else {
+        // Add ourselves as a device on the (caller-owned) I2C bus
+        i2c_device_config_t devCfg = {};
+        devCfg.dev_addr_length = I2C_ADDR_BIT_LEN_7;
+        devCfg.device_address = _i2cAddr;
+        devCfg.scl_speed_hz = _i2cClkSpeedHz;
+        if (i2c_master_bus_add_device(_i2cBusHandle, &devCfg, &_i2cDevHandle) != ESP_OK) {
+            throw BNO055I2CInitFailed();
+        }
     }
 #ifndef BNO055_DEBUG_OFF
     ESP_LOGD(BNO055_LOG_TAG, "Setup UART -> RDY");  // DEBUG
 #endif
 
     if (_intPin != GPIO_NUM_MAX) {
-        gpio_pad_select_gpio(_intPin);
+        esp_rom_gpio_pad_select_gpio(_intPin);
         gpio_set_direction(_intPin, GPIO_MODE_INPUT);
         gpio_set_intr_type(_intPin, GPIO_INTR_POSEDGE);
         gpio_set_pull_mode(_intPin, GPIO_PULLDOWN_ONLY);

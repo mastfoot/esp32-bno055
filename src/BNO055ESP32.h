@@ -33,12 +33,17 @@
 #include <cstring>  //memset, memcpy
 #include <exception>
 #include <string>
-#include "driver/i2c.h"
+#include "driver/gpio.h"
+#include "driver/i2c_master.h"
 #include "driver/uart.h"
+#include "esp_rom_gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#define ACK_EN 0x01
+// i2c_writeLen() stages "reg byte + payload" in a stack buffer before handing it to
+// i2c_master_transmit(); this bounds that buffer. The largest payload in this library
+// is the 22-byte sensor offsets block, so this leaves plenty of headroom.
+#define BNO055_I2C_WRITE_BUF_MAX 32
 
 #ifndef BNO055_DEBUG_OFF
 #define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE
@@ -443,6 +448,7 @@ typedef struct {
     uint8_t accelHighG = 0;
     uint8_t gyroHR = 0;
     uint8_t gyroAnyMotion = 0;
+    uint8_t accelOrBSX = 0;
 } bno055_interrupts_status_t;
 
 class BNO055BaseException : public std::exception {
@@ -538,9 +544,16 @@ class BNO055I2CError : public BNO055BaseException {
     BNO055I2CError(std::string message = "I2CError: Check your wiring.") : BNO055BaseException(message){};
 };
 
+class BNO055I2CInitFailed : public BNO055BaseException {
+   public:
+    BNO055I2CInitFailed(std::string message = "Failed to add BNO055 as a device on the I2C bus.")
+        : BNO055BaseException(message){};
+};
+
 class BNO055 {
    public:
-    BNO055(i2c_port_t i2cPort, uint8_t i2cAddr, gpio_num_t rstPin = GPIO_NUM_MAX, gpio_num_t intPin = GPIO_NUM_MAX);
+    BNO055(i2c_master_bus_handle_t i2cBusHandle, uint8_t i2cAddr, gpio_num_t rstPin = GPIO_NUM_MAX, gpio_num_t intPin = GPIO_NUM_MAX,
+           uint32_t i2cClkSpeedHz = 400000);
     BNO055(uart_port_t uartPort, gpio_num_t txPin = GPIO_NUM_17, gpio_num_t rxPin = GPIO_NUM_16, gpio_num_t rstPin = GPIO_NUM_MAX,
            gpio_num_t intPin = GPIO_NUM_MAX);
     ~BNO055();
@@ -639,6 +652,9 @@ class BNO055 {
                             bool yAxis = true, bool zAxis = true, bool filtered = true);
     void disableGyroHRInterrupt();
 
+    void enableAccelOrBSXDataReadyInterrupt(bool useInterruptPin = true);
+    void disableAccelOrBSXDataReadyInterrupt();
+
     bno055_interrupts_status_t getInterruptsStatus();
     void clearInterruptPin();
     static void IRAM_ATTR bno055_interrupt_handler(void *arg);
@@ -665,7 +681,7 @@ class BNO055 {
                                        .stop_bits = UART_STOP_BITS_1,
                                        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
                                        .rx_flow_ctrl_thresh = 0,
-                                       .use_ref_tick = false};
+                                       }; // .use_ref_tick = false
 
     typedef enum {
         BNO055_VECTOR_ACCELEROMETER = 0x08,  // Default: m/s²
@@ -702,8 +718,10 @@ class BNO055 {
     bool _i2cFlag;
 
     uart_port_t _uartPort;
-    i2c_port_t _i2cPort;
+    i2c_master_bus_handle_t _i2cBusHandle;
+    i2c_master_dev_handle_t _i2cDevHandle;
     uint8_t _i2cAddr;
+    uint32_t _i2cClkSpeedHz;
 
     gpio_num_t _txPin;
     gpio_num_t _rxPin;
