@@ -299,6 +299,143 @@ typedef enum { BNO055_UNIT_TEMP_C = 0x00, BNO055_UNIT_TEMP_F = 0x10 } bno055_tem
 
 typedef enum { BNO055_DATA_FORMAT_WINDOWS = 0x00, BNO055_DATA_FORMAT_ANDROID = 0x80 } bno055_data_output_format_t;
 
+/* ==================== raw fixed-point scale types ====================
+ * LSB weight for each output depends on which UNIT_SEL bit is set
+ * (sec 3.6.4). Each typedef documents its own scale factor so it doesn't
+ * need to be repeated at every field that uses it. */
+
+/** Scaled integer, centi-m/s² (raw / 100.0). Decimal scale, not Q-format. */
+typedef int16_t bno055_centi_mps2_t;
+
+/** Raw value directly in milli-g (1 LSB = 1 mg, no division needed). */
+typedef int16_t bno055_milli_g_t;
+
+/** Q-format, 4 fractional bits (raw / 16.0). Degree-family unit (dps/deg). */
+typedef int16_t bno055_q4_t;
+
+/** Scaled integer, raw / 900.0. Radian-family unit (rps/rad) — not a power
+ *  of two, so not true Q-format despite being "fixed point" in spirit. */
+typedef int16_t bno055_rad900_t;
+
+/** Q1.14 fixed point (raw / 16384.0). Always used for the quaternion. */
+typedef int16_t bno055_q1_14_t;
+
+/** 1 LSB = 1 °C, raw directly is the value. */
+typedef int8_t bno055_deg_c_t;
+
+/** 1 LSB = 2 °F, physical value = raw * 2. */
+typedef int8_t bno055_deg_f2_t;
+
+/* ==================== leaf structs: one physical representation each ==================== */
+
+typedef struct { bno055_centi_mps2_t x, y, z; } bno055_accel_mps2_raw_t;
+typedef struct { bno055_milli_g_t    x, y, z; } bno055_accel_mg_raw_t;
+
+typedef struct { bno055_centi_mps2_t x, y, z; } bno055_gravity_mps2_raw_t;
+typedef struct { bno055_milli_g_t    x, y, z; } bno055_gravity_mg_raw_t;
+
+typedef struct { bno055_centi_mps2_t x, y, z; } bno055_linear_accel_mps2_raw_t;
+typedef struct { bno055_milli_g_t    x, y, z; } bno055_linear_accel_mg_raw_t;
+
+typedef struct { bno055_q4_t     x, y, z; } bno055_gyro_dps_raw_t;
+typedef struct { bno055_rad900_t x, y, z; } bno055_gyro_rps_raw_t;
+
+typedef struct { bno055_q4_t     heading, roll, pitch; } bno055_euler_deg_raw_t;
+typedef struct { bno055_rad900_t heading, roll, pitch; } bno055_euler_rad_raw_t;
+
+/** Magnetometer is always µT — not unit-selectable, so no variant needed. */
+typedef struct { bno055_q4_t x, y, z; } bno055_mag_raw_t;
+
+/** Quaternion is always Q1.14 — not unit-selectable, so no variant needed. */
+typedef struct { bno055_q1_14_t w, x, y, z; } bno055_quaternion_raw_t;
+
+/* ==================== public tagged-union structs ====================
+ * What the getXRaw() methods return below: always the same C++ type per
+ * sensor regardless of configured unit. Check `unit` before reading the
+ * union member — that's the whole point of the tag. Reuses the unit
+ * enums already declared above so the tag always matches whatever
+ * setUnits() was last called with. */
+
+typedef struct {
+    bno055_accel_unit_t unit;
+    union {
+        bno055_accel_mps2_raw_t mps2;
+        bno055_accel_mg_raw_t   mg;
+    };
+} bno055_accel_raw_t;
+
+typedef struct {
+    bno055_accel_unit_t unit;
+    union {
+        bno055_gravity_mps2_raw_t mps2;
+        bno055_gravity_mg_raw_t   mg;
+    };
+} bno055_gravity_raw_t;
+
+typedef struct {
+    bno055_accel_unit_t unit;
+    union {
+        bno055_linear_accel_mps2_raw_t mps2;
+        bno055_linear_accel_mg_raw_t   mg;
+    };
+} bno055_linear_accel_raw_t;
+
+typedef struct {
+    bno055_angular_rate_unit_t unit;
+    union {
+        bno055_gyro_dps_raw_t dps;
+        bno055_gyro_rps_raw_t rps;
+    };
+} bno055_gyro_raw_t;
+
+typedef struct {
+    bno055_euler_unit_t unit;
+    union {
+        bno055_euler_deg_raw_t deg;
+        bno055_euler_rad_raw_t rad;
+    };
+} bno055_euler_raw_t;
+
+typedef struct {
+    bno055_temperature_unit_t unit;
+    union {
+        bno055_deg_c_t  c;
+        bno055_deg_f2_t f;
+    };
+} bno055_temp_raw_t;
+
+/* ==================== raw -> double conversion ====================
+ * One name (bno055_convert), resolved at compile time by argument type —
+ * call it the same way no matter which raw reading you're holding.
+ *
+ * Accel/gravity/linear-accel share this template body since they're
+ * structurally identical (same tag enum, same union members) — only
+ * their nominal type differs, kept distinct so you can't accidentally
+ * mix them up elsewhere. Gyro/Euler/mag/quaternion/temp each get their
+ * own overload below since their layouts genuinely differ; C++ prefers
+ * an exact non-template match, so those always win over this template
+ * for their respective types — no ambiguity. */
+template <typename AccelFamilyRaw>
+bno055_vector_t bno055_convert(AccelFamilyRaw raw) {
+    bno055_vector_t v;
+    if (raw.unit == BNO055_UNIT_ACCEL_MS2) {
+        v.x = raw.mps2.x / 100.0;
+        v.y = raw.mps2.y / 100.0;
+        v.z = raw.mps2.z / 100.0;
+    } else {
+        v.x = raw.mg.x;
+        v.y = raw.mg.y;
+        v.z = raw.mg.z;
+    }
+    return v;
+}
+
+bno055_vector_t     bno055_convert(bno055_gyro_raw_t raw);
+bno055_vector_t     bno055_convert(bno055_euler_raw_t raw); /* heading->x, roll->y, pitch->z */
+bno055_vector_t     bno055_convert(bno055_mag_raw_t raw);
+bno055_quaternion_t bno055_convert(bno055_quaternion_raw_t raw);
+double              bno055_convert(bno055_temp_raw_t raw);
+
 typedef enum {
     BNO055_CONF_ACCEL_RANGE_2G = 0x00,
     BNO055_CONF_ACCEL_RANGE_4G = 0x01,
@@ -588,15 +725,15 @@ class BNO055 {
     void setSensorOffsets(bno055_offsets_t newOffsets);
     bno055_calibration_t getCalibration();
 
-    int8_t getTemp();
+    bno055_temp_raw_t getTempRaw();
 
-    bno055_vector_t getVectorAccelerometer();
-    bno055_vector_t getVectorMagnetometer();
-    bno055_vector_t getVectorGyroscope();
-    bno055_vector_t getVectorEuler();
-    bno055_vector_t getVectorLinearAccel();
-    bno055_vector_t getVectorGravity();
-    bno055_quaternion_t getQuaternion();
+    bno055_accel_raw_t getAccelRaw();
+    bno055_mag_raw_t getMagRaw();
+    bno055_gyro_raw_t getGyroRaw();
+    bno055_euler_raw_t getEulerRaw();
+    bno055_linear_accel_raw_t getLinearAccelRaw();
+    bno055_gravity_raw_t getGravityRaw();
+    bno055_quaternion_raw_t getQuaternionRaw();
 
     int16_t getSWRevision();
     uint8_t getBootloaderRevision();
@@ -684,15 +821,6 @@ class BNO055 {
                                        }; // .use_ref_tick = false
 
     typedef enum {
-        BNO055_VECTOR_ACCELEROMETER = 0x08,  // Default: m/s²
-        BNO055_VECTOR_MAGNETOMETER = 0x0E,   // Default: uT
-        BNO055_VECTOR_GYROSCOPE = 0x14,      // Default: rad/s
-        BNO055_VECTOR_EULER = 0x1A,          // Default: degrees
-        BNO055_VECTOR_LINEARACCEL = 0x28,    // Default: m/s²
-        BNO055_VECTOR_GRAVITY = 0x2E         // Default: m/s²
-    } bno055_vector_type_t;
-
-    typedef enum {
         BNO055_OPERATION_MODE_CONFIG = 0x00,
         BNO055_OPERATION_MODE_ACCONLY = 0x01,
         BNO055_OPERATION_MODE_MAGONLY = 0x02,
@@ -726,11 +854,12 @@ class BNO055 {
     gpio_num_t _txPin;
     gpio_num_t _rxPin;
 
-    uint16_t accelScale = 100;
-    uint16_t tempScale = 1;
-    uint16_t angularRateScale = 16;
-    uint16_t eulerScale = 16;
-    uint16_t magScale = 16;
+    // Mirrors whatever setUnits() was last called with (defaults match power-on
+    // reset state), so each getXRaw() knows which union member/tag to fill.
+    bno055_accel_unit_t        _accelUnit = BNO055_UNIT_ACCEL_MS2;
+    bno055_angular_rate_unit_t _angularRateUnit = BNO055_UNIT_ANGULAR_RATE_DPS;
+    bno055_euler_unit_t        _eulerUnit = BNO055_UNIT_EULER_DEGREES;
+    bno055_temperature_unit_t  _tempUnit = BNO055_UNIT_TEMP_C;
 
     bno055_opmode_t _mode;
     void setOprMode(bno055_opmode_t mode, bool forced = false);
@@ -739,7 +868,6 @@ class BNO055 {
 
     void setExtCrystalUse(bool state);
 
-    bno055_vector_t getVector(bno055_vector_type_t vec);
     void enableInterrupt(uint8_t flag, bool useInterruptPin = true);
     void disableInterrupt(uint8_t flag);
 };

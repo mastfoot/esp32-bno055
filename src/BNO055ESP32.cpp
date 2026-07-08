@@ -445,12 +445,19 @@ bno055_calibration_t BNO055::getCalibration() {
     return cal;
 }
 
-int8_t BNO055::getTemp() {
+bno055_temp_raw_t BNO055::getTempRaw() {
     setPage(0);
     uint8_t t;
     read8(BNO055_REG_TEMP, &t);
-    t *= tempScale;
-    return t;
+
+    bno055_temp_raw_t out;
+    out.unit = _tempUnit;
+    if (_tempUnit == BNO055_UNIT_TEMP_C) {
+        out.c = (int8_t)t;
+    } else {
+        out.f = (int8_t)t;
+    }
+    return out;
 }
 
 void BNO055::reset() {
@@ -473,64 +480,177 @@ void BNO055::reset() {
     vTaskDelay(700 / portTICK_PERIOD_MS);  // (RE)BOOT TIME (datasheet recommends 650ms)
 }
 
-bno055_vector_t BNO055::getVector(bno055_vector_type_t vec) {
+bno055_accel_raw_t BNO055::getAccelRaw() {
     setPage(0);
     uint8_t buffer[6];
+    readLen(BNO055_REG_ACC_DATA_X_LSB, buffer, 6);
 
-    /* Read (6 bytes) */
-    readLen((bno055_reg_t)vec, buffer, 6);
+    int16_t x = (int16_t)((buffer[1] << 8) | buffer[0]);
+    int16_t y = (int16_t)((buffer[3] << 8) | buffer[2]);
+    int16_t z = (int16_t)((buffer[5] << 8) | buffer[4]);
 
-    double scale = 1;
-
-    if (vec == BNO055_VECTOR_MAGNETOMETER) {
-        scale = magScale;
+    bno055_accel_raw_t out;
+    out.unit = _accelUnit;
+    if (_accelUnit == BNO055_UNIT_ACCEL_MS2) {
+        out.mps2.x = x; out.mps2.y = y; out.mps2.z = z;
+    } else {
+        out.mg.x = x; out.mg.y = y; out.mg.z = z;
     }
-
-    else if (vec == BNO055_VECTOR_ACCELEROMETER || vec == BNO055_VECTOR_LINEARACCEL || vec == BNO055_VECTOR_GRAVITY) {
-        scale = accelScale;
-    }
-
-    else if (vec == BNO055_VECTOR_GYROSCOPE) {
-        scale = angularRateScale;
-    }
-
-    else if (vec == BNO055_VECTOR_EULER) {
-        scale = eulerScale;
-    }
-
-    bno055_vector_t xyz;
-    xyz.x = (int16_t)((buffer[1] << 8) | buffer[0]) / scale;
-    xyz.y = (int16_t)((buffer[3] << 8) | buffer[2]) / scale;
-    xyz.z = (int16_t)((buffer[5] << 8) | buffer[4]) / scale;
-
-    return xyz;
+    return out;
 }
 
-bno055_vector_t BNO055::getVectorAccelerometer() { return getVector(BNO055_VECTOR_ACCELEROMETER); }
+bno055_gravity_raw_t BNO055::getGravityRaw() {
+    setPage(0);
+    uint8_t buffer[6];
+    readLen(BNO055_REG_GRV_DATA_X_LSB, buffer, 6);
 
-bno055_vector_t BNO055::getVectorMagnetometer() { return getVector(BNO055_VECTOR_MAGNETOMETER); }
+    int16_t x = (int16_t)((buffer[1] << 8) | buffer[0]);
+    int16_t y = (int16_t)((buffer[3] << 8) | buffer[2]);
+    int16_t z = (int16_t)((buffer[5] << 8) | buffer[4]);
 
-bno055_vector_t BNO055::getVectorGyroscope() { return getVector(BNO055_VECTOR_GYROSCOPE); }
+    bno055_gravity_raw_t out;
+    out.unit = _accelUnit;
+    if (_accelUnit == BNO055_UNIT_ACCEL_MS2) {
+        out.mps2.x = x; out.mps2.y = y; out.mps2.z = z;
+    } else {
+        out.mg.x = x; out.mg.y = y; out.mg.z = z;
+    }
+    return out;
+}
 
-bno055_vector_t BNO055::getVectorEuler() { return getVector(BNO055_VECTOR_EULER); }
+bno055_linear_accel_raw_t BNO055::getLinearAccelRaw() {
+    setPage(0);
+    uint8_t buffer[6];
+    readLen(BNO055_REG_LIA_DATA_X_LSB, buffer, 6);
 
-bno055_vector_t BNO055::getVectorLinearAccel() { return getVector(BNO055_VECTOR_LINEARACCEL); }
+    int16_t x = (int16_t)((buffer[1] << 8) | buffer[0]);
+    int16_t y = (int16_t)((buffer[3] << 8) | buffer[2]);
+    int16_t z = (int16_t)((buffer[5] << 8) | buffer[4]);
 
-bno055_vector_t BNO055::getVectorGravity() { return getVector(BNO055_VECTOR_GRAVITY); }
+    bno055_linear_accel_raw_t out;
+    out.unit = _accelUnit;
+    if (_accelUnit == BNO055_UNIT_ACCEL_MS2) {
+        out.mps2.x = x; out.mps2.y = y; out.mps2.z = z;
+    } else {
+        out.mg.x = x; out.mg.y = y; out.mg.z = z;
+    }
+    return out;
+}
 
-bno055_quaternion_t BNO055::getQuaternion() {
+bno055_gyro_raw_t BNO055::getGyroRaw() {
+    setPage(0);
+    uint8_t buffer[6];
+    readLen(BNO055_REG_GYR_DATA_X_LSB, buffer, 6);
+
+    int16_t x = (int16_t)((buffer[1] << 8) | buffer[0]);
+    int16_t y = (int16_t)((buffer[3] << 8) | buffer[2]);
+    int16_t z = (int16_t)((buffer[5] << 8) | buffer[4]);
+
+    bno055_gyro_raw_t out;
+    out.unit = _angularRateUnit;
+    if (_angularRateUnit == BNO055_UNIT_ANGULAR_RATE_DPS) {
+        out.dps.x = x; out.dps.y = y; out.dps.z = z;
+    } else {
+        out.rps.x = x; out.rps.y = y; out.rps.z = z;
+    }
+    return out;
+}
+
+bno055_euler_raw_t BNO055::getEulerRaw() {
+    setPage(0);
+    uint8_t buffer[6];
+    readLen(BNO055_REG_EUL_HEADING_LSB, buffer, 6);
+
+    int16_t heading = (int16_t)((buffer[1] << 8) | buffer[0]);
+    int16_t roll    = (int16_t)((buffer[3] << 8) | buffer[2]);
+    int16_t pitch   = (int16_t)((buffer[5] << 8) | buffer[4]);
+
+    bno055_euler_raw_t out;
+    out.unit = _eulerUnit;
+    if (_eulerUnit == BNO055_UNIT_EULER_DEGREES) {
+        out.deg.heading = heading; out.deg.roll = roll; out.deg.pitch = pitch;
+    } else {
+        out.rad.heading = heading; out.rad.roll = roll; out.rad.pitch = pitch;
+    }
+    return out;
+}
+
+bno055_mag_raw_t BNO055::getMagRaw() {
+    setPage(0);
+    uint8_t buffer[6];
+    readLen(BNO055_REG_MAG_DATA_X_LSB, buffer, 6);
+
+    bno055_mag_raw_t out;
+    out.x = (int16_t)((buffer[1] << 8) | buffer[0]);
+    out.y = (int16_t)((buffer[3] << 8) | buffer[2]);
+    out.z = (int16_t)((buffer[5] << 8) | buffer[4]);
+    return out;
+}
+
+bno055_quaternion_raw_t BNO055::getQuaternionRaw() {
     uint8_t buffer[8];
-    double scale = 1 << 14;
-    /* Read quat data (8 bytes) */
     readLen(BNO055_REG_QUA_DATA_W_LSB, buffer, 8);
 
-    bno055_quaternion_t wxyz;
-    wxyz.w = (int16_t)((buffer[1] << 8) | buffer[0]) / scale;
-    wxyz.x = (int16_t)((buffer[3] << 8) | buffer[2]) / scale;
-    wxyz.y = (int16_t)((buffer[5] << 8) | buffer[4]) / scale;
-    wxyz.z = (int16_t)((buffer[7] << 8) | buffer[6]) / scale;
+    bno055_quaternion_raw_t out;
+    out.w = (int16_t)((buffer[1] << 8) | buffer[0]);
+    out.x = (int16_t)((buffer[3] << 8) | buffer[2]);
+    out.y = (int16_t)((buffer[5] << 8) | buffer[4]);
+    out.z = (int16_t)((buffer[7] << 8) | buffer[6]);
+    return out;
+}
 
-    return wxyz;
+/* ==================== bno055_convert overloads ====================
+ * The accel-family template lives in the header (needed there for
+ * implicit instantiation); these four are plain non-template overloads,
+ * so their definitions live here like any other function body. */
+
+bno055_vector_t bno055_convert(bno055_gyro_raw_t raw) {
+    bno055_vector_t v;
+    if (raw.unit == BNO055_UNIT_ANGULAR_RATE_DPS) {
+        v.x = raw.dps.x / 16.0;
+        v.y = raw.dps.y / 16.0;
+        v.z = raw.dps.z / 16.0;
+    } else {
+        v.x = raw.rps.x / 900.0;
+        v.y = raw.rps.y / 900.0;
+        v.z = raw.rps.z / 900.0;
+    }
+    return v;
+}
+
+bno055_vector_t bno055_convert(bno055_euler_raw_t raw) {
+    bno055_vector_t v;
+    if (raw.unit == BNO055_UNIT_EULER_DEGREES) {
+        v.x = raw.deg.heading / 16.0;
+        v.y = raw.deg.roll / 16.0;
+        v.z = raw.deg.pitch / 16.0;
+    } else {
+        v.x = raw.rad.heading / 900.0;
+        v.y = raw.rad.roll / 900.0;
+        v.z = raw.rad.pitch / 900.0;
+    }
+    return v;
+}
+
+bno055_vector_t bno055_convert(bno055_mag_raw_t raw) {
+    bno055_vector_t v;
+    v.x = raw.x / 16.0;
+    v.y = raw.y / 16.0;
+    v.z = raw.z / 16.0;
+    return v;
+}
+
+bno055_quaternion_t bno055_convert(bno055_quaternion_raw_t raw) {
+    bno055_quaternion_t q;
+    q.w = raw.w / 16384.0;
+    q.x = raw.x / 16384.0;
+    q.y = raw.y / 16384.0;
+    q.z = raw.z / 16384.0;
+    return q;
+}
+
+double bno055_convert(bno055_temp_raw_t raw) {
+    return (raw.unit == BNO055_UNIT_TEMP_C) ? (double)raw.c : (double)raw.f * 2.0;
 }
 
 bno055_offsets_t BNO055::getSensorOffsets() {
@@ -821,16 +941,16 @@ void BNO055::setUnits(bno055_accel_unit_t accel, bno055_angular_rate_unit_t angu
     uint8_t tmp = 0;
 
     tmp |= accel;
-    accelScale = (accel != 0) ? 1 : 100;
+    _accelUnit = accel;
 
     tmp |= angularRate;
-    angularRateScale = (angularRate != 0) ? 900 : 16;
+    _angularRateUnit = angularRate;
 
     tmp |= euler;
-    eulerScale = (euler != 0) ? 900 : 16;
+    _eulerUnit = euler;
 
     tmp |= temp;
-    tempScale = (temp != 0) ? 2 : 1;
+    _tempUnit = temp;
 
     tmp |= format;
     write8(BNO055_REG_UNIT_SEL, tmp);
