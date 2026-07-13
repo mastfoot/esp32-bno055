@@ -109,8 +109,8 @@ void BNO055::i2c_readLen(uint8_t reg, uint8_t *buffer, uint8_t len, uint32_t tim
 
   // timeoutMS==0 is used elsewhere in this library to mean "don't wait for a UART response",
   // it has no such meaning on I2C: a write must always wait for the bus transaction to
-  // finish, so 0 is remapped to -1 (i2c_master's "block indefinitely").
-  int xferTimeoutMS = (timeoutMS == 0) ? -1 : (int)timeoutMS;
+  // finish, so 0 is remapped to DEFAULT_I2C_TIMEOUT_MS since it othervise would block indefinetly
+  int xferTimeoutMS = (timeoutMS == 0) ? DEFAULT_I2C_TIMEOUT_MS : (int)timeoutMS;
 
   esp_err_t err = i2c_master_transmit_receive(_i2cDevHandle, &reg, 1, buffer, len, xferTimeoutMS);
 
@@ -143,8 +143,8 @@ void BNO055::i2c_writeLen(uint8_t reg, uint8_t *buffer, uint8_t len, uint32_t ti
   txBuf[0] = reg;
   memcpy(&txBuf[1], buffer, len);
 
-  // see i2c_readLen() for why timeoutMS==0 is remapped to -1 here
-  int xferTimeoutMS = (timeoutMS == 0) ? -1 : (int)timeoutMS;
+  // see i2c_readLen() for why timeoutMS==0 is remapped to a bounded default here
+  int xferTimeoutMS = (timeoutMS == 0) ? DEFAULT_I2C_TIMEOUT_MS : (int)timeoutMS;
 
   esp_err_t err = i2c_master_transmit(_i2cDevHandle, txBuf, len + 1, xferTimeoutMS);
 

@@ -52,6 +52,8 @@
 
 #define DEFAULT_UART_TIMEOUT_MS 30  // you can try to decrease/increase this. (DEFAULT: 30)
 
+#define DEFAULT_I2C_TIMEOUT_MS 1000
+
 // BNO055 Registers(Table 4-1, Pag 51)
 typedef enum {
     // PAGE 1
